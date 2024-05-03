@@ -1,0 +1,677 @@
+=== snake_console.cpp ===
+#include <iostream>
+#include <ncurses.h>
+
+
+#include "../brick_game/snake/game.h"
+
+// #include "console_view.h"
+#include "../gui/desktop/console_controller.h"
+
+void startGameLoop(s21::GameField* gameField, s21::ConsoleController* consoleController, s21::ConsoleView* consoleView, s21::HelpField* helpField);
+s21::GameField* getGamefield();
+
+int main() {
+    initscr(); // Инициализация ncurses
+    cbreak(); // Включение режима cbreak (буферизация не используется)
+    noecho(); // Отключение отображения вводимых символов
+    curs_set(0); // Скрыть курсор
+
+    //GameField gameField(10, 20, 1);
+    s21::GameField* gameField = getGamefield();
+    gameField->StartNewGame();
+    s21::ConsoleController consoleController;
+    s21::ConsoleView consoleView;
+    s21::HelpField helpField;
+    startGameLoop(gameField, &consoleController, &consoleView, &helpField);
+    
+    endwin(); // Завершение работы с ncurses
+    return 0;
+}
+
+=== ../brick_game/snake/game.h ===
+#ifndef GAME_H
+#define GAME_H
+
+#include <random>
+#include <functional>
+#include <string>
+#include <sstream>
+#include <fstream>
+#include <iostream>
+
+namespace s21 {
+typedef enum {
+    Start,
+    Pause,
+    Terminate,
+    Left,
+    Right,
+    Up,
+    Down,
+    Action,
+    None
+} UserAction_t;
+
+typedef struct {
+    int **field;
+    int **next;
+    int score;
+    int high_score;
+    int level;
+    int speed;
+    int pause;
+} GameInfo_t;
+
+class SnakeItem;
+class Snake;
+class GameField;
+
+class SnakeItem
+{
+    friend Snake;
+    friend GameField;
+public:
+    SnakeItem(int x, int y);
+    int getX() {return m_x;}
+    int getY() {return m_y;}
+private:
+    int m_x;
+    int m_y;
+};
+
+class Snake
+{
+    friend GameField;
+private:
+    std::vector<SnakeItem*> m_snakeBody;
+    int m_snakeBeginSize;
+
+public:
+    Snake();
+    ~Snake(){
+        for (auto& item : m_snakeBody) {
+            delete item;
+        }
+        m_snakeBody.clear();
+    }
+    enum SnakeDirection
+    {
+        up,
+        left,
+        down,
+        right
+    };
+    SnakeDirection m_snakeDirection;
+    void setDirection(SnakeDirection direction) {m_snakeDirection = direction;}
+    SnakeDirection getDirection() {return m_snakeDirection;}
+    std::vector<SnakeItem*>& getSnakeBody(){return m_snakeBody;}
+};
+
+class GameField
+{
+public:
+    GameField(int width, int height, int itemSize);
+    ~GameField() {
+        deleteField();
+        delete m_snake;
+        delete m_food;
+        m_food = nullptr;
+    }
+
+    void setUpdateViewFunction(std::function<void()> func) { m_updateViewFunction = std::move(func); }
+    void setUpdateTextFunction(std::function<void(std::string)> func) { m_updateTextFunction = std::move(func); }
+    void setGameOverFunction(std::function<void()> func) { m_gameOverFunction = std::move(func); }
+    void setSpeedUpFunction(std::function<void()> func) { m_speedUpFunction = std::move(func); }
+
+    bool isGameOver() { return m_isGameOver; }
+    void StartNewGame();
+    bool isPause() { return m_isPause; }
+    void ReversePause() { m_isPause = !m_isPause; }
+    void SetGameStatus();
+    bool isMoveBlocked() { return m_isMoveBlocked; }
+    void setIsMoveBlocked_TRUE() { m_isMoveBlocked = true; }
+    void setIsMoveBlocked_FALSE() { m_isMoveBlocked = false; }
+    int GetScore() { return m_score; }
+    int getSnakeItemSize() { return m_snakeItemSize; }
+    void GameOver();
+    void setScore(int score) {m_score = score;}
+    void setRecord(int record) {m_record = record;}
+    void CreateFood();
+    SnakeItem* MoveSnake();
+    void CheckCollisions(SnakeItem* newSnakeItem);
+
+    Snake* getSnake() const { return m_snake; }
+
+    void setSnakeDirection(Snake::SnakeDirection direction);
+    Snake::SnakeDirection getSnakeDirection() {return m_snake->getDirection();}
+    SnakeItem* getFood() {return m_food;}
+    void MoveAndCheck();
+    int getSpeed() { return m_speed; }
+    int getScore() { return m_score; }
+    std::function<void()> m_updateViewFunction;
+    std::function<void(std::string)> m_updateTextFunction;
+    std::function<void()> m_gameOverFunction;
+    std::function<void()> m_speedUpFunction;
+    void (*m_timerCallback)();
+    int getWidth() { return m_width; }
+    int getHeight() { return m_height; }
+    void setGameOver(bool cond) {m_isGameOver = cond;}
+    int getLevel() { return m_level; }
+    int getRecord() { return m_record; }
+    void levelUp();
+
+    int** updateField();
+    void printField() const;
+    GameInfo_t updateCurrentState();
+
+private:
+    int m_width;
+    int m_height;
+    Snake *m_snake;
+    SnakeItem *m_food;
+    int m_snakeItemSize;
+    int m_fieldSize_hor;
+    int m_fieldSize_ver;
+    int m_score;
+    int m_speed;
+    bool m_isPause;
+    bool m_isMoveBlocked;
+    bool m_isGameOver;
+    bool m_collision;
+    int m_level;
+    int m_record;
+
+    int** m_field;
+
+
+
+    
+    
+
+    void createField();
+    void deleteField();
+    void clearField();
+    void setCell(int x, int y, int value);
+    GameInfo_t gameInfo;
+
+};
+};
+
+#endif // GAME_H
+
+
+=== ../brick_game/snake/game.cpp ===
+#include "game.h"
+//#include <QDebug>
+#include <iostream>
+
+
+
+s21::GameField::GameField(int width, int height, int itemSize) : m_width(width), m_height(height), m_snakeItemSize(itemSize)
+{
+    createField(); 
+    m_fieldSize_hor = m_width/m_snakeItemSize;
+    m_fieldSize_ver = m_height/m_snakeItemSize;
+    StartNewGame();
+}
+
+void s21::GameField::setSnakeDirection(Snake::SnakeDirection direction)
+{
+    if (m_snake != nullptr)
+    {
+        m_snake->setDirection(direction);
+    }
+}
+
+void s21::GameField::levelUp()
+{
+    if (m_score % 5 == 0) {
+        m_level++;
+        m_speed /= 1.1;
+        if (m_speedUpFunction) {m_speedUpFunction(); }
+    }
+}
+
+void s21::GameField::GameOver()
+{
+    m_isGameOver = true;
+
+    if (m_score > m_record)
+    {
+        // Если превышает, записываем новый рекорд в файл record.txt
+        std::ofstream recordFile("record.txt");
+        if (recordFile.is_open())
+        {
+            recordFile << m_score << "\n";
+            recordFile.close();
+        }
+    }
+    updateField();
+    std::string text = "record : " + std::to_string(m_record) + "\n\n\nscore : " + std::to_string(m_score) + "\n\n\nlevel : " + std::to_string(m_level) + "\n\n\nstart again - SPACE";
+    if (m_updateTextFunction) {m_updateTextFunction(text); }
+    if (m_gameOverFunction) {m_gameOverFunction(); }
+    if (m_updateViewFunction) {m_updateViewFunction(); }
+}
+
+void s21::GameField::StartNewGame()
+{
+    m_speed = 300;
+    m_level = 1;
+    m_record = 0;
+    m_isPause = true;
+    m_isMoveBlocked = false;
+    m_isGameOver = false;
+    m_collision = false;
+    m_snake = new Snake();
+    m_food = new SnakeItem(m_fieldSize_hor/2, m_fieldSize_ver/2);
+    m_score = 0;
+
+    std::ifstream recordFile("record.txt");
+    if (recordFile.is_open())
+    {
+        // Если файл открыт, считываем значение из него в m_record
+        std::string recordString;
+        std::getline(recordFile, recordString);
+        std::istringstream iss(recordString);
+        iss >> m_record;
+        recordFile.close();
+    }
+    else
+    {
+        // Если файл не открыт, создаем его и устанавливаем m_record в 0
+        std::ofstream newRecordFile("record.txt");
+        if (newRecordFile.is_open())
+        {
+            newRecordFile << "0\n"; // Записываем начальное значение рекорда
+            newRecordFile.close();
+        }
+    }
+
+    std::string text = "record : " + std::to_string(m_record) + "\n\n\nscore : " + std::to_string(m_score) + "\n\n\nlevel : " + std::to_string(m_level) + "\n\n\npause - SPACE";
+    if (m_updateTextFunction) {m_updateTextFunction(text); }
+}
+
+void s21::GameField::CreateFood()
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> disX(0, m_fieldSize_hor - 1);
+    std::uniform_int_distribution<> disY(0, m_fieldSize_ver - 1);
+    m_food->m_x = disX(gen);
+    m_food->m_y = disY(gen);
+
+    for (std::vector<SnakeItem*>::size_type i = 0; i < m_snake->m_snakeBody.size(); i++)
+    {
+        if (m_food->m_x == m_snake->m_snakeBody[i]->m_x && m_food->m_y == m_snake->m_snakeBody[i]->m_y)
+        {
+            return CreateFood();
+        }
+    }
+}
+
+void s21::GameField::MoveAndCheck()
+{
+    SnakeItem *newSnakeItem = MoveSnake();
+    updateField();
+    //printField();
+    if (m_updateViewFunction) {m_updateViewFunction(); }
+    CheckCollisions(newSnakeItem);
+}
+
+int** s21::GameField::updateField() {
+    clearField();
+    for (const auto& segment : m_snake->getSnakeBody()) {
+        setCell(segment->getX() * getSnakeItemSize(), segment->getY() * getSnakeItemSize(), 1); 
+    }
+    setCell(m_food->getX() * getSnakeItemSize(), m_food->getY() * getSnakeItemSize(), 2); 
+    return m_field;
+}
+// void s21::GameField::printField() const {
+//     for (int y = 0; y < m_height; ++y) {
+//         for (int x = 0; x < m_width; ++x) {
+//             std::cout << m_field[x][y] << " ";
+//         }
+//         std::cout << std::endl;
+//     }
+//     std::cout << std::endl;
+// }
+    
+s21::GameInfo_t s21::GameField::updateCurrentState() {
+    gameInfo.field = updateField();
+    gameInfo.next = nullptr;
+    gameInfo.score = m_score;
+    gameInfo.high_score = m_record;
+    gameInfo.level = m_level;
+    gameInfo.speed = m_speed;
+    gameInfo.pause = m_isPause;
+
+    return gameInfo;
+}
+
+void s21::GameField::createField() {
+    // Выделяем память для поля
+    m_field = new int*[m_width];
+    for (int i = 0; i < m_width; ++i) {
+        m_field[i] = new int[m_height];
+    }
+    // Инициализируем поле (в данном примере заполняем нулями)
+    for (int i = 0; i < m_width; ++i) {
+        for (int j = 0; j < m_height; ++j) {
+            m_field[i][j] = 0;
+        }
+    }
+}
+
+void s21::GameField::deleteField() {
+    // Освобождаем память, выделенную для поля
+    for (int i = 0; i < m_width; ++i) {
+        delete[] m_field[i];
+    }
+    delete[] m_field;
+}
+
+void s21::GameField::clearField() {
+    // Очищаем поле (заполняем нулями)ы
+    for (int i = 0; i < m_width; ++i) {
+        for (int j = 0; j < m_height; ++j) {
+            m_field[i][j] = 0;
+        }
+    }
+}
+
+void s21::GameField::setCell(int x, int y, int value) {
+    if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
+        m_field[x][y] = value;
+    }
+}
+
+s21::SnakeItem* s21::GameField::MoveSnake()
+{
+
+    SnakeItem *newSnakeItem;
+    if (m_snake->m_snakeDirection == Snake::SnakeDirection::right)
+    {
+        newSnakeItem = new SnakeItem(m_snake->m_snakeBody[0]->m_x + 1, m_snake->m_snakeBody[0]->m_y);
+    }
+    else if (m_snake->m_snakeDirection == Snake::SnakeDirection::left)
+    {
+        newSnakeItem = new SnakeItem(m_snake->m_snakeBody[0]->m_x - 1, m_snake->m_snakeBody[0]->m_y);
+    }
+    else if (m_snake->m_snakeDirection == Snake::SnakeDirection::up)
+    {
+        newSnakeItem = new SnakeItem(m_snake->m_snakeBody[0]->m_x, m_snake->m_snakeBody[0]->m_y-1);
+    }
+    else
+    {
+        newSnakeItem = new SnakeItem(m_snake->m_snakeBody[0]->m_x, m_snake->m_snakeBody[0]->m_y+1);
+    }
+
+    // получение еды
+    if(newSnakeItem->m_x == m_food->m_x && newSnakeItem->m_y == m_food->m_y)
+    {
+        m_score++;
+        levelUp();
+        CreateFood();
+        std::string text = "record : " + std::to_string(m_record) + "\n\n\nscore : " + std::to_string(m_score) + "\n\n\nlevel : " + std::to_string(m_level) + "\n\n\npause - SPACE";
+        if (m_updateTextFunction) {m_updateTextFunction(text); }
+    }
+    else
+    {
+        delete m_snake->m_snakeBody.back();
+        m_snake->m_snakeBody.pop_back();
+    }
+    m_snake->m_snakeBody.insert(m_snake->m_snakeBody.begin(), newSnakeItem);
+    return newSnakeItem;
+}
+
+void s21::GameField::CheckCollisions(SnakeItem* newSnakeItem) {
+//    qDebug() << "newSnakeItem " << newSnakeItem;
+// ограничение игрового поля
+
+    if (newSnakeItem->m_x >= m_fieldSize_hor)
+    {
+        m_collision = true;
+    }
+    else if (newSnakeItem->m_x < 0)
+    {
+        m_collision = true;
+    }
+    else if (newSnakeItem->m_y < 0)
+    {
+        m_collision = true;
+    }
+    else if (newSnakeItem->m_y >= m_fieldSize_ver)
+    {
+        m_collision = true;
+    }
+//    // проигрыш
+
+    for (std::vector<SnakeItem*>::size_type i = 1; i < m_snake->m_snakeBody.size(); i++)
+    {
+        if (m_snake->m_snakeBody[0]->m_x == m_snake->m_snakeBody[i]->m_x && m_snake->m_snakeBody[0]->m_y == m_snake->m_snakeBody[i]->m_y)
+        {
+            m_collision = true;
+            break;
+        }
+    }
+    if (m_collision)
+    {
+        GameOver();
+        return;
+    }
+}
+
+s21::SnakeItem::SnakeItem(int x, int y)
+{
+    m_x = x;
+    m_y = y;
+}
+
+s21::Snake::Snake()
+{
+    m_snakeBeginSize = 4;
+    for (int i = 0; i < m_snakeBeginSize; i++)
+    {
+        m_snakeBody.insert(m_snakeBody.begin(), new SnakeItem(i, 0));
+    }
+    m_snakeDirection = SnakeDirection::right;
+}
+
+
+=== ../gui/desktop/console_controller.h ===
+#ifndef CONSOLE_CONTROLLER_H
+#define CONSOLE_CONTROLLER_H
+
+#include <chrono>
+#include <thread>
+#include "../../brick_game/snake/game.h"
+#include "console_view.h"
+
+namespace s21 {
+class ConsoleController {
+public:
+    ConsoleController() {}
+    void userInput(s21::UserAction_t action, bool hold);
+    s21::UserAction_t convertGetchToUserAction(int ch);
+};
+};
+
+#endif // CONSOLE_CONTROLLER_H
+=== ../gui/desktop/console_controller.cpp ===
+#include "console_controller.h"
+
+s21::GameField* getGamefield();
+
+void s21::ConsoleController::userInput(s21::UserAction_t action, bool hold) {
+    s21::GameField* m_gameField = getGamefield();
+    switch (action) {
+        case s21::Pause:
+            m_gameField->ReversePause();
+            if (m_gameField->isPause()) {
+                //timeout(-1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(-1));
+            }
+            else {
+                //timeout(300);
+                std::this_thread::sleep_for(std::chrono::milliseconds(m_gameField->getSpeed()));
+            }
+            break;
+        case s21::Terminate: 
+            m_gameField->GameOver();
+            break;
+        case s21::Up: 
+            if (m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::up && m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::down) m_gameField->setSnakeDirection(s21::Snake::SnakeDirection::up);
+            break;
+        case s21::Down: 
+            if (m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::down && m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::up) m_gameField->setSnakeDirection(s21::Snake::SnakeDirection::down);
+            break;
+        case s21::Left: 
+            if (m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::left && m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::right) m_gameField->setSnakeDirection(s21::Snake::SnakeDirection::left);
+            break;
+        case s21::Right: 
+            if (m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::right && m_gameField->getSnakeDirection() != s21::Snake::SnakeDirection::left) m_gameField->setSnakeDirection(s21::Snake::SnakeDirection::right);
+            break;
+        case s21::Start:
+            break;
+        case s21::Action:
+            break;
+        case s21::None:
+            break;
+        }
+            // napms(400);
+        (void)hold;
+}
+
+s21::UserAction_t s21::ConsoleController::convertGetchToUserAction(int ch) {
+    switch (ch) {
+        case 'x':
+            return s21::Start;
+        case ' ':
+            return s21::Pause;
+        case 'q':
+            return s21::Terminate;
+        case 'a':
+            return s21::Left;
+        case 'd':
+            return s21::Right;
+        case 'w':
+            return s21::Up;
+        case 's':
+            return s21::Down;
+        case 'c':
+            return s21::Action;
+        default:
+            return s21::None;
+    }
+}
+
+void startGameLoop(s21::GameField* gameField, s21::ConsoleController* consoleController, s21::ConsoleView* consoleView, s21::HelpField* helpField) {
+    timeout(1); // Установка времени ожидания ввода
+    while (!gameField->isGameOver()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(gameField->getSpeed()));
+        s21::UserAction_t action = consoleController->convertGetchToUserAction(getch());
+        if (!gameField->isPause() || (action == s21::Pause) || (action == s21::Terminate)) { // Проверяем, не находится ли игра на паузе
+            if ((action == s21::Down ) || (action == s21::Up) || (action == s21::Left) || (action == s21::Right) || (action == s21::Pause) || (action == s21::Terminate)) {
+                gameField->setIsMoveBlocked_TRUE();
+                consoleController->userInput(action, false);
+            } 
+            gameField->MoveAndCheck();
+        }
+        consoleView->draw();     
+        helpField->draw();
+        
+        
+        // Если игра окончена, выводим "Game Over"
+        if (gameField->isGameOver()) {
+            consoleView->GameOver();
+            while ((action = consoleController->convertGetchToUserAction(getch())) != s21::Pause && action != s21::Terminate) {
+            }
+            if (action == s21::Terminate) {
+                break;
+            } else {
+                gameField->StartNewGame();
+                gameField->ReversePause();
+            }
+        }
+        
+    }
+    
+}
+
+=== ../gui/desktop/console_view.h ===
+#ifndef CONSOLE_VIEW_H
+#define CONSOLE_VIEW_H
+
+#include "../../brick_game/snake/game.h"
+#include <ncurses.h>
+
+namespace s21 {
+
+class HelpField {
+public:
+    HelpField() {}
+    void draw();
+
+private:
+    //GameField* m_gameField;
+};
+
+
+class ConsoleView {
+public:
+    ConsoleView() {}
+    void draw();
+    void GameOver();
+
+private:
+    //GameField* m_gameField;
+};
+};
+
+#endif // CONSOLE_VIEW_H
+=== ../gui/desktop/console_view.cpp ===
+#include "console_view.h"
+
+s21::GameField* getGamefield() {
+        static s21::GameField gameField(10, 20, 1); 
+        return &gameField;
+}
+
+void s21::HelpField::draw() {
+    s21::GameField* m_gameField = getGamefield();
+    s21::GameInfo_t info = m_gameField->updateCurrentState();
+    mvprintw(0, m_gameField->getWidth() + 2, "Record: %d", info.high_score);
+    mvprintw(2, m_gameField->getWidth() + 2, "Score: %d", info.score);
+    mvprintw(4, m_gameField->getWidth() + 2, "Level: %d", info.level);
+    mvprintw(6, m_gameField->getWidth() + 2, "Pause - SPACE");
+    refresh(); // Обновление экрана
+}
+
+void s21::ConsoleView::draw() {
+    s21::GameField* m_gameField = getGamefield();
+    s21::GameInfo_t info = m_gameField->updateCurrentState();
+    clear(); 
+    for (int y = 0; y < m_gameField->getHeight(); ++y) {
+        for (int x = 0; x < m_gameField->getWidth(); ++x) {
+            if (info.field[x][y] == 2) {
+                mvprintw(y, x, "*"); 
+            } else if (info.field[x][y] == 1) {
+                mvprintw(y, x, "O"); 
+            } else {
+                mvprintw(y, x, "."); 
+            }
+        }
+    }
+    m_gameField->setIsMoveBlocked_FALSE();
+    std::cout << m_gameField->isMoveBlocked() << std::endl;
+    // napms(400);
+    refresh(); 
+}
+
+void s21::ConsoleView::GameOver() {
+    s21::GameField* m_gameField = getGamefield();
+    mvprintw(m_gameField->getHeight() / 2, m_gameField->getWidth() / 2 - 4, "Game Over");
+    refresh();
+}
+
